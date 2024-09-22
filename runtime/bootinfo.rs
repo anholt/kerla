@@ -17,6 +17,8 @@ pub struct AllowedPciDevice {
     pub slot: u8,
 }
 
+/// Complete boot setup to pass to boot_kernel() from arch-specific initial
+/// boot, including command line configuration.
 pub struct BootInfo {
     pub ram_areas: ArrayVec<RamArea, 8>,
     pub virtio_mmio_devices: ArrayVec<VirtioMmioDevice, 4>,
@@ -46,6 +48,8 @@ impl BootInfo {
     }
 }
 
+/// Temporary structure for the output of parsing the kernel command line in the
+/// process of setting up a BootInfo
 pub struct Cmdline {
     pub pci_enabled: bool,
     pub virtio_mmio_devices: ArrayVec<VirtioMmioDevice, 4>,
