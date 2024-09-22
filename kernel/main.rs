@@ -218,13 +218,8 @@ pub fn boot_kernel(#[cfg_attr(debug_assertions, allow(unused))] bootinfo: &BootI
         .expect("failed to open /dev/console");
 
     // Open the init's executable.
-    let argv0 = if option_env!("INIT_SCRIPT").is_some() {
-        "/bin/sh"
-    } else {
-        "/sbin/init"
-    };
     let executable_path = root_fs
-        .lookup_path(Path::new(argv0), true)
+        .lookup_path(Path::new(bootinfo.init.as_str()), true)
         .expect("failed to open the init executable");
 
     // We cannot initialize the process subsystem until INITIAL_ROOT_FS is initialized.
@@ -236,21 +231,20 @@ pub fn boot_kernel(#[cfg_attr(debug_assertions, allow(unused))] bootinfo: &BootI
     profiler.lap_time("process init");
 
     // Create the init process.
-    if let Some(script) = option_env!("INIT_SCRIPT") {
-        let argv = &[b"sh", b"-c", script.as_bytes()];
-        info!("running init script: {:?}", script);
-        Process::new_init_process(INITIAL_ROOT_FS.clone(), executable_path, console, argv)
-            .expect("failed to execute the init script: ");
-    } else {
-        info!("running /sbin/init");
-        Process::new_init_process(
-            INITIAL_ROOT_FS.clone(),
-            executable_path,
-            console,
-            &[b"/sbin/init"],
-        )
-        .expect("failed to execute /sbin/init");
+    let mut init_argv = vec![bootinfo.init.as_bytes()];
+    if !bootinfo.init_args.is_empty() {
+        for arg in bootinfo.init_args.as_str().split(' ') {
+            init_argv.push(arg.as_bytes());
+        }
     }
+    info!("running : {:?} {:?}", bootinfo.init, bootinfo.init_args);
+    Process::new_init_process(
+        INITIAL_ROOT_FS.clone(),
+        executable_path,
+        console,
+        &init_argv,
+    )
+    .expect("failed to execute init: ");
 
     profiler.lap_time("first process init");
 

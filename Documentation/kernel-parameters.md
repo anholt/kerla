@@ -1,6 +1,6 @@
 # Kernel Parameters
 
-Kernel parameters allows you to configure Kerla at the boot time.
+Kernel parameters allow you to configure Kerla at the boot time.
 
 ## Available Parameters
 
@@ -10,10 +10,12 @@ Kernel parameters allows you to configure Kerla at the boot time.
 | `serial1`            | If it's on, kernel log messages are sent to the secondary serial port (see [Logging](logging)).                                 | `serial1=on`                    |
 | `dhcp`               | If it's off, the in-kernel DHCP client won't start.                                                                             | `dhcp=off`                      |
 | `ip4`                | A static IPv4 address with the network prefix length.                                                                           | `ip4=10.0.0.123/24`             |
+| `init`               | Path to the init binary to be executed at boot       .                                                                          | `init=/bin/sh`                  |
 | `gateway_ip4`        | A static gateway IPv4 address.                                                                                                  | `gateway_ip4=10.0.0.1`          |
 | `pci`                | If it's off, PCI devices are not discovered.                                                                                    | `pci=off`                       |
 | `pci_device`         | PCI devices (`bus:slot`) recognized by Kerla. Multiple parameters are accepted. If it's not given, all PCI devices are allowed. | `pci_device=0:1`                |
 | `virtio_mmio.device` | The virtio devices connected over MMIO. Multiple parameters are accepted.                                                       | `virtio_mmio.device=@0xf000:12` |
+| '--'                 | Delimiter between kernel arguments and arguments to be passed to the init binary                                                | "init=/bin/ls -- /usr           |
 
 ## How to Set Kernel Parameters
 

@@ -1,3 +1,5 @@
+use core::str::FromStr;
+
 use arrayvec::{ArrayString, ArrayVec};
 
 use crate::address::PAddr;
@@ -29,6 +31,8 @@ pub struct BootInfo {
     pub dhcp_enabled: bool,
     pub ip4: Option<ArrayString<18>>,
     pub gateway_ip4: Option<ArrayString<15>>,
+    pub init: ArrayString<256>,
+    pub init_args: ArrayString<512>,
 }
 
 impl BootInfo {
@@ -44,6 +48,8 @@ impl BootInfo {
             dhcp_enabled: cmdline.dhcp_enabled,
             ip4: cmdline.ip4,
             gateway_ip4: cmdline.gateway_ip4,
+            init: cmdline.init,
+            init_args: cmdline.init_args,
         }
     }
 }
@@ -59,6 +65,8 @@ pub struct Cmdline {
     pub ip4: Option<ArrayString<18>>,
     pub gateway_ip4: Option<ArrayString<15>>,
     pub pci_allowlist: ArrayVec<AllowedPciDevice, 4>,
+    pub init: ArrayString<256>,
+    pub init_args: ArrayString<512>,
 }
 
 impl Cmdline {
@@ -74,14 +82,28 @@ impl Cmdline {
         let mut dhcp_enabled = true;
         let mut ip4 = None;
         let mut gateway_ip4 = None;
+        let mut after_double_dash = false;
+        let mut init = "/sbin/init";
+        let mut init_args = ArrayString::new();
+
         if !s.is_empty() {
             for config in s.split(' ') {
                 if config.is_empty() {
                     continue;
                 }
+                if after_double_dash {
+                    if !init_args.is_empty() {
+                        init_args.try_push(' ').expect("init args too long");
+                    }
+                    init_args.try_push_str(config).expect("init args too long");
+                    continue;
+                }
 
                 let mut words = config.splitn(2, '=');
                 match (words.next(), words.next()) {
+                    (Some("--"), None) => {
+                        after_double_dash = true;
+                    }
                     (Some("pci"), Some("off")) => {
                         warn!("bootinfo: PCI disabled");
                         pci_enabled = false;
@@ -135,6 +157,9 @@ impl Cmdline {
                         }
                         ip4 = Some(s);
                     }
+                    (Some("init"), Some(value)) => {
+                        init = value;
+                    }
                     (Some("gateway_ip4"), Some(value)) => {
                         let mut s = ArrayString::new();
                         if s.try_push_str(value).is_err() {
@@ -152,6 +177,8 @@ impl Cmdline {
             }
         }
 
+        let init = ArrayString::from_str(init).expect("init command too long");
+
         Cmdline {
             pci_enabled,
             pci_allowlist,
@@ -161,6 +188,8 @@ impl Cmdline {
             dhcp_enabled,
             ip4,
             gateway_ip4,
+            init,
+            init_args,
         }
     }
 }

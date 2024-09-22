@@ -24,11 +24,11 @@ endif
 # $(IMAGE): Use a Docker image for initramfs.
 ifeq ($(IMAGE),)
 INITRAMFS_PATH := build/testing.initramfs
-export INIT_SCRIPT := /bin/sh
+INIT ?= "/bin/sh"
 else
 IMAGE_FILENAME := $(subst :,_,$(subst /,.s,$(IMAGE)))
 INITRAMFS_PATH := build/$(IMAGE_FILENAME).initramfs
-export INIT_SCRIPT := $(shell tools/inspect-init-in-docker-image.py $(IMAGE))
+INIT ?= $(shell tools/inspect-init-in-docker-image.py $(IMAGE))
 endif
 
 DUMMY_INITRAMFS_PATH := build/dummy-for-lint.initramfs
@@ -119,6 +119,7 @@ run: build
 		$(if $(KVM),--kvm,)                                            \
 		$(if $(GDB),--gdb,)                                            \
 		$(if $(LOG),--append-cmdline "log=$(LOG)",)                    \
+		$(if $(INIT),--init="$(INIT)",)                                \
 		$(if $(CMDLINE),--append-cmdline "$(CMDLINE)",)                \
 		$(if $(LOG_SERIAL),--log-serial "$(LOG_SERIAL)",)              \
 		$(if $(QEMU),--qemu $(QEMU),)                                  \
