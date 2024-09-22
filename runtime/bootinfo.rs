@@ -29,6 +29,23 @@ pub struct BootInfo {
     pub gateway_ip4: Option<ArrayString<15>>,
 }
 
+impl BootInfo {
+    pub fn new_from_command_line(ram_areas: ArrayVec<RamArea, 8>, cmdline: &[u8]) -> BootInfo {
+        let cmdline = Cmdline::parse(cmdline);
+        BootInfo {
+            ram_areas,
+            pci_enabled: cmdline.pci_enabled,
+            pci_allowlist: cmdline.pci_allowlist,
+            virtio_mmio_devices: cmdline.virtio_mmio_devices,
+            log_filter: cmdline.log_filter,
+            use_second_serialport: cmdline.use_second_serialport,
+            dhcp_enabled: cmdline.dhcp_enabled,
+            ip4: cmdline.ip4,
+            gateway_ip4: cmdline.gateway_ip4,
+        }
+    }
+}
+
 pub struct Cmdline {
     pub pci_enabled: bool,
     pub virtio_mmio_devices: ArrayVec<VirtioMmioDevice, 4>,
