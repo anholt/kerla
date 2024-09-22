@@ -1,5 +1,5 @@
 use crate::address::{PAddr, VAddr};
-use crate::bootinfo::{BootInfo, Cmdline, RamArea};
+use crate::bootinfo::{BootInfo, RamArea};
 use arrayvec::ArrayVec;
 use core::cmp::max;
 use core::mem::size_of;
@@ -163,8 +163,8 @@ fn process_memory_map_entry(
 unsafe fn parse_multiboot2_info(header: &Multiboot2InfoHeader) -> BootInfo {
     let header_vaddr = VAddr::new(header as *const _ as usize);
     let mut off = size_of::<Multiboot2TagHeader>();
-    let mut ram_areas = ArrayVec::new();
-    let mut cmdline = None;
+    let mut ram_areas: ArrayVec<RamArea, 8> = ArrayVec::new();
+    let mut cmdline: &[u8] = &[];
     while off + size_of::<Multiboot2TagHeader>() < header.total_size as usize {
         let tag_vaddr = header_vaddr.add(off);
         let tag = &*tag_vaddr.as_ptr::<Multiboot2TagHeader>();
@@ -179,10 +179,7 @@ unsafe fn parse_multiboot2_info(header: &Multiboot2InfoHeader) -> BootInfo {
                     len += 1;
                 }
 
-                cmdline = Some(
-                    core::str::from_utf8(slice::from_raw_parts(cstr, len))
-                        .expect("cmdline is not a utf-8 string"),
-                );
+                cmdline = slice::from_raw_parts(cstr, len);
             }
             6 => {
                 // Memory map.
@@ -212,18 +209,7 @@ unsafe fn parse_multiboot2_info(header: &Multiboot2InfoHeader) -> BootInfo {
     }
 
     assert!(!ram_areas.is_empty());
-    let cmdline = Cmdline::parse(cmdline.unwrap_or("").as_bytes());
-    BootInfo {
-        ram_areas,
-        pci_enabled: cmdline.pci_enabled,
-        pci_allowlist: cmdline.pci_allowlist,
-        virtio_mmio_devices: cmdline.virtio_mmio_devices,
-        log_filter: cmdline.log_filter,
-        use_second_serialport: cmdline.use_second_serialport,
-        dhcp_enabled: cmdline.dhcp_enabled,
-        ip4: cmdline.ip4,
-        gateway_ip4: cmdline.gateway_ip4,
-    }
+    BootInfo::new_from_command_line(ram_areas, cmdline)
 }
 
 unsafe fn parse_multiboot_legacy_info(info: &MultibootLegacyInfo) -> BootInfo {
@@ -241,7 +227,7 @@ unsafe fn parse_multiboot_legacy_info(info: &MultibootLegacyInfo) -> BootInfo {
         off += entry.entry_size + size_of::<u32>() as u32;
     }
 
-    let mut cmdline = None;
+    let mut cmdline: &[u8] = &[];
     if info.cmdline != 0 {
         // Command line.
         let cstr = PAddr::new(info.cmdline as usize).as_ptr::<u8>();
@@ -250,25 +236,10 @@ unsafe fn parse_multiboot_legacy_info(info: &MultibootLegacyInfo) -> BootInfo {
             len += 1;
         }
 
-        cmdline = Some(
-            core::str::from_utf8(slice::from_raw_parts(cstr, len))
-                .expect("cmdline is not a utf-8 string"),
-        );
-        trace!("cmdline={:?}", cmdline);
+        cmdline = slice::from_raw_parts(cstr, len);
     }
 
-    let cmdline = Cmdline::parse(cmdline.unwrap_or("").as_bytes());
-    BootInfo {
-        ram_areas,
-        pci_enabled: cmdline.pci_enabled,
-        pci_allowlist: cmdline.pci_allowlist,
-        virtio_mmio_devices: cmdline.virtio_mmio_devices,
-        log_filter: cmdline.log_filter,
-        use_second_serialport: cmdline.use_second_serialport,
-        dhcp_enabled: cmdline.dhcp_enabled,
-        ip4: cmdline.ip4,
-        gateway_ip4: cmdline.gateway_ip4,
-    }
+    BootInfo::new_from_command_line(ram_areas, cmdline)
 }
 
 unsafe fn parse_linux_boot_params(boot_params: PAddr) -> BootInfo {
@@ -287,23 +258,15 @@ unsafe fn parse_linux_boot_params(boot_params: PAddr) -> BootInfo {
         );
     }
 
-    let cmdline = Cmdline::parse(core::slice::from_raw_parts(
-        setup_header.cmd_line_ptr as *const u8,
-        setup_header
-            .cmdline_size
-            .saturating_sub(1 /* trailing NUL */) as usize,
-    ));
-    BootInfo {
+    BootInfo::new_from_command_line(
         ram_areas,
-        pci_enabled: cmdline.pci_enabled,
-        pci_allowlist: cmdline.pci_allowlist,
-        virtio_mmio_devices: cmdline.virtio_mmio_devices,
-        log_filter: cmdline.log_filter,
-        use_second_serialport: cmdline.use_second_serialport,
-        dhcp_enabled: cmdline.dhcp_enabled,
-        ip4: cmdline.ip4,
-        gateway_ip4: cmdline.gateway_ip4,
-    }
+        core::slice::from_raw_parts(
+            setup_header.cmd_line_ptr as *const u8,
+            setup_header
+                .cmdline_size
+                .saturating_sub(1 /* trailing NUL */) as usize,
+        ),
+    )
 }
 
 /// Parses a multiboot/multiboot2/linux boot protocol boot information.
