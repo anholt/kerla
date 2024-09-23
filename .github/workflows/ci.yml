@@ -64,7 +64,7 @@ jobs:
         run: >
           make run
           ${{ matrix.build_options }}
-          INIT_SCRIPT="/integration_tests/run.sh; halt -f"
+          INIT_SCRIPT="/integration_tests/run_and_halt.sh"
           DISABLE_AUTO_CR_PRINT=1
           | tee run.log
 
