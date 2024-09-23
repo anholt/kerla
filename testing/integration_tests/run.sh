@@ -2,8 +2,12 @@
 set -e
 
 if [ "$TESTS_DIR" = "" ]; then
-    echo "TESTS_DIR is not set"
-    exit 1
+    if [ -e /integration_tests ]; then
+        export TESTS_DIR=/integration_tests
+    else
+        echo "TESTS_DIR is not set"
+        exit 1
+    fi
 fi
 
 cat <<EOF
@@ -17,7 +21,7 @@ EOF
 failed=0
 for test in $TESTS_DIR/*.test; do
     echo "==> $test"
-    
+
     set +e
     sh $test
     result=$?
