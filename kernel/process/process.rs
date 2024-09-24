@@ -31,7 +31,10 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 use core::{cmp::max, sync::atomic::AtomicUsize};
 use crossbeam::atomic::AtomicCell;
-use goblin::elf64::program_header::PT_LOAD;
+use goblin::{
+    elf::header::ET_DYN,
+    elf64::program_header::{PT_INTERP, PT_LOAD},
+};
 use kerla_runtime::{
     arch::{PtRegs, PAGE_SIZE},
     page_allocator::{alloc_pages, AllocPageFlags},
@@ -605,7 +608,6 @@ fn do_elf_binfmt(
 ) -> Result<UserspaceEntry> {
     let file_header_top = USER_STACK_TOP;
     let elf = Elf::parse(buf)?;
-    let ip = elf.entry()?;
 
     let mut end_of_image = 0;
     for phdr in elf.program_headers() {
@@ -613,6 +615,24 @@ fn do_elf_binfmt(
             end_of_image = max(end_of_image, (phdr.p_vaddr + phdr.p_memsz) as usize);
         }
     }
+
+    // Decide the offset to apply to all the vaddrs if it's a dynamic
+    // executable. TODO: Add ASLR support for security.
+    let dyn_offset = if elf.header().e_type == ET_DYN {
+        let mut align = PAGE_SIZE as u64;
+        for phdr in elf.program_headers() {
+            if phdr.p_type != PT_LOAD {
+                continue;
+            }
+            align = max(align, phdr.p_align);
+        }
+
+        align
+    } else {
+        0
+    };
+
+    end_of_image += dyn_offset as usize;
 
     let mut random_bytes = [0u8; 16];
     read_secure_random(((&mut random_bytes) as &mut [u8]).into())?;
@@ -653,6 +673,10 @@ fn do_elf_binfmt(
         UserVAddr::new(user_heap_bottom).unwrap(),
     )?;
     for i in 0..(buf.len() / PAGE_SIZE) {
+        println!(
+            "map buf at 0x{:x}",
+            file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE).as_isize()
+        );
         vm.page_table_mut().map_user_page(
             file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE),
             file_header_pages.add(i * PAGE_SIZE),
@@ -660,17 +684,36 @@ fn do_elf_binfmt(
     }
 
     for i in 0..(init_stack_len / PAGE_SIZE) {
+        println!(
+            "map stack at 0x{:x}",
+            init_stack_top.sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE).as_isize()
+        );
         vm.page_table_mut().map_user_page(
             init_stack_top.sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE),
             init_stack_pages.add(i * PAGE_SIZE),
         );
     }
 
+    println!("ALIGN 0x{:x}", dyn_offset);
+
     // Register program headers in the virtual memory space.
     for phdr in elf.program_headers() {
         if phdr.p_type != PT_LOAD {
+            if phdr.p_type == PT_INTERP {
+                warn!("ELF interpreter not supported yet");
+                return Err(Errno::ENOEXEC.into());
+            }
             continue;
         }
+
+        let load_vaddr = phdr.p_vaddr + dyn_offset;
+        println!(
+            "LOAD 0x{:x} .. 0x{:x} (0x{:x} 0x{:x})",
+            load_vaddr,
+            load_vaddr + phdr.p_memsz,
+            phdr.p_filesz,
+            phdr.p_memsz,
+        );
 
         let area_type = if phdr.p_filesz > 0 {
             VmAreaType::File {
@@ -683,11 +726,13 @@ fn do_elf_binfmt(
         };
 
         vm.add_vm_area(
-            UserVAddr::new_nonnull(phdr.p_vaddr as usize)?,
+            UserVAddr::new_nonnull(load_vaddr as usize)?,
             phdr.p_memsz as usize,
             area_type,
         )?;
     }
+
+    let ip = UserVAddr::new_nonnull((elf.header().e_entry + dyn_offset) as usize)?;
 
     Ok(UserspaceEntry { vm, ip, user_sp })
 }
