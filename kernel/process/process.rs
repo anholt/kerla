@@ -31,7 +31,7 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 use core::{cmp::max, sync::atomic::AtomicUsize};
 use crossbeam::atomic::AtomicCell;
-use goblin::elf64::program_header::PT_LOAD;
+use goblin::{elf::header::ET_DYN, elf64::program_header::PT_LOAD};
 use kerla_runtime::{
     arch::{PtRegs, PAGE_SIZE},
     page_allocator::{alloc_pages, AllocPageFlags},
@@ -634,13 +634,13 @@ fn load_elf(vm: &mut Vm, executable: &Arc<dyn FileLike>, elf: &Elf, offset: u64)
 }
 
 fn do_elf_binfmt(
+    root_fs: &Arc<SpinLock<RootFs>>,
     executable: &Arc<dyn FileLike>,
     argv: &[&[u8]],
     envp: &[&[u8]],
     buf: &[u8],
 ) -> Result<UserspaceEntry> {
     let elf = Elf::parse(buf)?;
-    let ip = elf.entry()?;
 
     let mut end_of_image = 0;
     for phdr in elf.program_headers() {
@@ -649,16 +649,70 @@ fn do_elf_binfmt(
         }
     }
 
+    let mut interpreter_buf = [0u8; PAGE_SIZE];
+    // Open the ELF interpreter, if any, and parse its ELF headers.
+    let (interpreter_path, interpreter_elf) = if let Some(interpreter) = elf.interpreter(buf) {
+        let interpreter = core::str::from_utf8(interpreter)
+            .map_err(|_| Error::new(Errno::EINVAL))?
+            .trim_end_matches('\0');
+
+        let interpreter_path = root_fs.lock().lookup_path(Path::new(interpreter), true)?;
+        let interpreter = interpreter_path.inode.as_file()?;
+
+        interpreter.read(
+            0,
+            (&mut interpreter_buf[..]).into(),
+            &OpenOptions::readwrite(),
+        )?;
+        let interpreter_elf = Elf::parse(&interpreter_buf)?;
+
+        (Some(interpreter_path), Some(interpreter_elf))
+    } else {
+        (None, None)
+    };
+
+    // Decide the offset to apply to all vaddrs of the executable (and the
+    // interpreter) if it's a dynamic executable. TODO: Add ASLR support for
+    // security.
+    let (dyn_offset, interpreter_offset) = if elf.header().e_type == ET_DYN {
+        let align = elf.max_align();
+
+        if let Some(interpreter_elf) = &interpreter_elf {
+            // If there's an interpreter, we load the program at an offset so
+            // that it doesn't overlap with where the interpreter gets loaded.
+            // Linux calculates this value scaling with the maximum task size,
+            // but here we're using a BSD style behavior.  The interpreter gets
+            // loaded at the bottom of the address space, above NULL but
+            // respecting its alignment requirements.
+            const ET_DYN_BASE: u64 = 0x10001000;
+            (
+                align_down_u64(ET_DYN_BASE, align),
+                interpreter_elf.max_align(),
+            )
+        } else {
+            // Load non-interpreted dynamic programs at the bottom of address
+            // space (above NULL).
+            (align, 0)
+        }
+    } else {
+        (0, 0)
+    };
+
+    end_of_image += dyn_offset as usize;
+    let at_entry = elf.header().e_entry + dyn_offset;
+
     let mut random_bytes = [0u8; 16];
     read_secure_random(((&mut random_bytes) as &mut [u8]).into())?;
 
     // Set up the user stack.
     let auxv = &[
-        Auxv::Phdr(elf.phdr_vaddr()?),
+        Auxv::Phdr(elf.phdr_vaddr()?.add(dyn_offset as usize)),
         Auxv::Phnum(elf.program_headers().len()),
         Auxv::Phent(size_of::<ProgramHeader>()),
         Auxv::Pagesz(PAGE_SIZE),
         Auxv::Random(random_bytes),
+        Auxv::Entry(at_entry as usize),
+        Auxv::Base(interpreter_offset as usize),
     ];
     const USER_STACK_LEN: usize = 128 * 1024; // TODO: Implement rlimit
     let init_stack_top = USER_STACK_TOP;
@@ -691,9 +745,27 @@ fn do_elf_binfmt(
         );
     }
 
-    load_elf(&mut vm, executable, &elf, 0)?;
+    // Load our executable into memory at the offset we chose.
+    load_elf(&mut vm, executable, &elf, dyn_offset)?;
 
-    Ok(UserspaceEntry { vm, ip, user_sp })
+    // Load the ELF interpreter (such as ld.so) if one is required,
+    // redirecting the initial IP (but not AT_ENTRY) to it.
+    let entry = if let Some(interpreter_path) = interpreter_path {
+        let interpreter = interpreter_path.inode.as_file()?;
+        let interpreter_elf = interpreter_elf.unwrap();
+
+        load_elf(&mut vm, interpreter, &interpreter_elf, interpreter_offset)?;
+
+        interpreter_elf.header().e_entry + interpreter_offset
+    } else {
+        elf.header().e_entry + dyn_offset
+    };
+
+    Ok(UserspaceEntry {
+        vm,
+        ip: UserVAddr::new_nonnull(entry as usize)?,
+        user_sp,
+    })
 }
 
 /// Creates a new virtual memory space, parses and maps an executable file,
@@ -714,7 +786,7 @@ fn do_setup_userspace(
         return do_script_binfmt(&executable_path, argv, envp, root_fs, &buf);
     }
 
-    do_elf_binfmt(executable, argv, envp, &buf)
+    do_elf_binfmt(root_fs, executable, argv, envp, &buf)
 }
 
 pub fn gc_exited_processes() {
