@@ -1,7 +1,13 @@
 use crate::prelude::*;
 use core::{mem::size_of, slice::from_raw_parts};
-use goblin::elf64::header::{Header, ELFMAG, EM_X86_64, ET_EXEC};
 pub use goblin::elf64::program_header::ProgramHeader;
+use goblin::{
+    elf::{
+        header::ET_DYN, program_header::{PT_INTERP, PT_LOAD}
+    },
+    elf64::header::{Header, ELFMAG, EM_X86_64, ET_EXEC},
+};
+use kerla_api::arch::PAGE_SIZE;
 use kerla_runtime::address::UserVAddr;
 
 /// A parsed ELF object.
@@ -29,8 +35,8 @@ impl<'a> Elf<'a> {
             return Err(Errno::ENOEXEC.into());
         }
 
-        if header.e_type != ET_EXEC {
-            debug_warn!("ELF is not executable");
+        if header.e_type != ET_EXEC && header.e_type != ET_DYN {
+            debug_warn!("ELF is not executable or dynamic: {:?}", header.e_type);
             return Err(Errno::ENOEXEC.into());
         }
 
@@ -45,11 +51,6 @@ impl<'a> Elf<'a> {
             header,
             program_headers,
         })
-    }
-
-    /// The entry point of the ELF file.
-    pub fn entry(&self) -> Result<UserVAddr> {
-        UserVAddr::new_nonnull(self.header.e_entry as usize).map_err(Into::into)
     }
 
     /// The ELF header.
@@ -73,5 +74,36 @@ impl<'a> Elf<'a> {
             }
         }
         Err(Errno::ENOEXEC.into())
+    }
+
+    /// Returns the ELF interpreter defined in the program headers, or None.
+    /// TODO: Elf needs to be a better abstraction where it holds the buf, so we
+    /// don't need to pass it in again like this.
+    pub fn interpreter(&self, buf: &'a [u8]) -> Option<&'a [u8]> {
+        for phdr in self.program_headers() {
+            if phdr.p_type == PT_INTERP {
+                let start = phdr.p_offset as usize;
+                let end = start.checked_add(phdr.p_filesz as usize)?;
+                // TODO: The interpreter can be offset past the first page (for
+                // example, patchelf --set-interpreter), while we currently only
+                // load the first page into the kernel.
+                return buf.get(start..end);
+            }
+        }
+        None
+    }
+
+    /// Returns the overall alignment of the program to be loaded based on the
+    /// alignment of the PT_LOAD segments.  The minimum alignment we can honor
+    /// is a page size.
+    pub fn max_align(&self) -> u64 {
+        let mut align = PAGE_SIZE as u64;
+        for phdr in self.program_headers() {
+            if phdr.p_type != PT_LOAD {
+                continue;
+            }
+            align = align.max(phdr.p_align);
+        }
+        align
     }
 }

@@ -49,13 +49,16 @@ FROM scratch
 
 # Directories to be populated by "busybox --install -s".
 COPY --from=empty_dir /empty_dir /bin
+COPY --from=empty_dir /empty_dir /lib
 COPY --from=empty_dir /empty_dir /sbin
 COPY --from=empty_dir /empty_dir /usr/bin
+COPY --from=empty_dir /empty_dir /usr/lib
 COPY --from=empty_dir /empty_dir /usr/sbin
 
 COPY --from=busybox  /build/busybox_unstripped /bin/busybox
 COPY --from=dropbear /build/dropbear /build/dropbearkey /bin
 COPY --from=curl     /build/src/curl /bin
+COPY --from=busybox  /lib/ld-musl-x86_64.so.1 /lib
 
 RUN ["/bin/busybox", "--install", "-s"]
 RUN mkdir -p /etc /dev /tmp /var/www/html

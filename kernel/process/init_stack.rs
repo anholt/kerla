@@ -20,6 +20,11 @@ pub enum Auxv {
     Pagesz(usize),
     /// 16 random bytes. Used for stack canary.
     Random([u8; 16]),
+    /// Address the ELF interpreter was loaded at (if any)
+    Base(usize),
+    /// Entrypoint for the ELF program (not the initial program IP in the case
+    /// of interpreting by the dynamic linker.)
+    Entry(usize),
 }
 
 fn push_bytes_to_stack(sp: &mut VAddr, stack_bottom: VAddr, buf: &[u8]) -> Result<()> {
@@ -64,6 +69,8 @@ fn push_auxv_entry_to_stack(
         Auxv::Phent(value) => (4, *value),
         Auxv::Phnum(value) => (5, *value),
         Auxv::Pagesz(value) => (6, *value),
+        Auxv::Base(value) => (7, *value),
+        Auxv::Entry(value) => (9, *value),
         Auxv::Random(_) => (25, data_ptr.unwrap().as_isize() as usize),
     };
 
@@ -85,7 +92,13 @@ pub(super) fn estimate_user_init_stack_size(
 
     let aux_data_len = auxv.iter().fold(0, |l, aux| {
         l + match aux {
-            Auxv::Null | Auxv::Phdr(_) | Auxv::Phent(_) | Auxv::Phnum(_) | Auxv::Pagesz(_) => 0,
+            Auxv::Null
+            | Auxv::Phdr(_)
+            | Auxv::Phent(_)
+            | Auxv::Phnum(_)
+            | Auxv::Pagesz(_)
+            | Auxv::Base(_)
+            | Auxv::Entry(_) => 0,
             Auxv::Random(_) => 16,
         }
     });
