@@ -31,16 +31,13 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 use core::{cmp::max, sync::atomic::AtomicUsize};
 use crossbeam::atomic::AtomicCell;
-use goblin::{
-    elf::header::ET_DYN,
-    elf64::program_header::{PT_INTERP, PT_LOAD},
-};
+use goblin::{elf::header::ET_DYN, elf64::program_header::PT_LOAD};
 use kerla_runtime::{
     arch::{PtRegs, PAGE_SIZE},
     page_allocator::{alloc_pages, AllocPageFlags},
     spinlock::{SpinLock, SpinLockGuard},
 };
-use kerla_utils::alignment::align_up;
+use kerla_utils::alignment::{align_down_u64, align_up};
 
 type ProcessTable = BTreeMap<PId, Arc<Process>>;
 
@@ -599,114 +596,17 @@ fn do_script_binfmt(
     do_setup_userspace(shebang_path, &argv, envp, root_fs, false)
 }
 
-fn do_elf_binfmt(
-    executable: &Arc<dyn FileLike>,
-    argv: &[&[u8]],
-    envp: &[&[u8]],
-    file_header_pages: kerla_api::address::PAddr,
-    buf: &[u8],
-) -> Result<UserspaceEntry> {
-    let file_header_top = USER_STACK_TOP;
-    let elf = Elf::parse(buf)?;
-
-    let mut end_of_image = 0;
-    for phdr in elf.program_headers() {
-        if phdr.p_type == PT_LOAD {
-            end_of_image = max(end_of_image, (phdr.p_vaddr + phdr.p_memsz) as usize);
-        }
-    }
-
-    // Decide the offset to apply to all the vaddrs if it's a dynamic
-    // executable. TODO: Add ASLR support for security.
-    let dyn_offset = if elf.header().e_type == ET_DYN {
-        let mut align = PAGE_SIZE as u64;
-        for phdr in elf.program_headers() {
-            if phdr.p_type != PT_LOAD {
-                continue;
-            }
-            align = max(align, phdr.p_align);
-        }
-
-        align
-    } else {
-        0
-    };
-
-    end_of_image += dyn_offset as usize;
-
-    let mut random_bytes = [0u8; 16];
-    read_secure_random(((&mut random_bytes) as &mut [u8]).into())?;
-
-    // Set up the user stack.
-    let auxv = &[
-        Auxv::Phdr(
-            file_header_top
-                .sub(buf.len())
-                .add(elf.header().e_phoff as usize),
-        ),
-        Auxv::Phnum(elf.program_headers().len()),
-        Auxv::Phent(size_of::<ProgramHeader>()),
-        Auxv::Pagesz(PAGE_SIZE),
-        Auxv::Random(random_bytes),
-    ];
-    const USER_STACK_LEN: usize = 128 * 1024; // TODO: Implement rlimit
-    let init_stack_top = file_header_top.sub(buf.len());
-    let user_stack_bottom = init_stack_top.sub(USER_STACK_LEN).value();
-    let user_heap_bottom = align_up(end_of_image, PAGE_SIZE);
-    let init_stack_len = align_up(estimate_user_init_stack_size(argv, envp, auxv), PAGE_SIZE);
-    if user_heap_bottom >= user_stack_bottom || init_stack_len >= USER_STACK_LEN {
-        return Err(Errno::E2BIG.into());
-    }
-
-    let init_stack_pages = alloc_pages(init_stack_len / PAGE_SIZE, AllocPageFlags::KERNEL)?;
-    let user_sp = init_user_stack(
-        init_stack_top,
-        init_stack_pages.as_vaddr().add(init_stack_len),
-        init_stack_pages.as_vaddr(),
-        argv,
-        envp,
-        auxv,
-    )?;
-
-    let mut vm = Vm::new(
-        UserVAddr::new(user_stack_bottom).unwrap(),
-        UserVAddr::new(user_heap_bottom).unwrap(),
-    )?;
-    for i in 0..(buf.len() / PAGE_SIZE) {
-        println!(
-            "map buf at 0x{:x}",
-            file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE).as_isize()
-        );
-        vm.page_table_mut().map_user_page(
-            file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE),
-            file_header_pages.add(i * PAGE_SIZE),
-        );
-    }
-
-    for i in 0..(init_stack_len / PAGE_SIZE) {
-        println!(
-            "map stack at 0x{:x}",
-            init_stack_top.sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE).as_isize()
-        );
-        vm.page_table_mut().map_user_page(
-            init_stack_top.sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE),
-            init_stack_pages.add(i * PAGE_SIZE),
-        );
-    }
-
-    println!("ALIGN 0x{:x}", dyn_offset);
-
+/// Loads an ELF file's PT_LOAD sections into a process's memory.  The offset
+/// must already be chosen so that there is an empty hole in the VM from the
+/// first p_vaddr+offset through the lastp_vaddr+offset+memsz.
+fn load_elf(vm: &mut Vm, executable: &Arc<dyn FileLike>, elf: &Elf, offset: u64) -> Result<()> {
     // Register program headers in the virtual memory space.
     for phdr in elf.program_headers() {
         if phdr.p_type != PT_LOAD {
-            if phdr.p_type == PT_INTERP {
-                warn!("ELF interpreter not supported yet");
-                return Err(Errno::ENOEXEC.into());
-            }
             continue;
         }
 
-        let load_vaddr = phdr.p_vaddr + dyn_offset;
+        let load_vaddr = phdr.p_vaddr + offset;
         println!(
             "LOAD 0x{:x} .. 0x{:x} (0x{:x} 0x{:x})",
             load_vaddr,
@@ -732,9 +632,182 @@ fn do_elf_binfmt(
         )?;
     }
 
-    let ip = UserVAddr::new_nonnull((elf.header().e_entry + dyn_offset) as usize)?;
+    Ok(())
+}
 
-    Ok(UserspaceEntry { vm, ip, user_sp })
+fn do_elf_binfmt(
+    root_fs: &Arc<SpinLock<RootFs>>,
+    executable: &Arc<dyn FileLike>,
+    argv: &[&[u8]],
+    envp: &[&[u8]],
+    file_header_pages: kerla_api::address::PAddr,
+    buf: &[u8],
+) -> Result<UserspaceEntry> {
+    let file_header_top = USER_STACK_TOP;
+    let elf = Elf::parse(buf)?;
+
+    let mut end_of_image = 0;
+    for phdr in elf.program_headers() {
+        if phdr.p_type == PT_LOAD {
+            end_of_image = max(end_of_image, (phdr.p_vaddr + phdr.p_memsz) as usize);
+        }
+    }
+
+    // Open the ELF interpreter, if any, and parse its ELF headers.
+    let (interpreter_path, interpreter_elf) = if let Some(interpreter) = elf.interpreter(buf) {
+        let interpreter = core::str::from_utf8(interpreter)
+            .map_err(|_| Error::new(Errno::EINVAL))?
+            .trim_end_matches('\0');
+        println!("interp '{}'", interpreter);
+        let interpreter_path = root_fs.lock().lookup_path(Path::new(interpreter), true)?;
+        let interpreter = interpreter_path.inode.as_file()?;
+        // Read the ELF header in the interpreter.  We use user pages for this
+        // because the inode read function needs a UserBufferMut.
+        let interpreter_file_header_len = PAGE_SIZE;
+        let interpreter_file_header_pages = alloc_pages(
+            interpreter_file_header_len / PAGE_SIZE,
+            AllocPageFlags::KERNEL,
+        )?;
+        let interpreter_buf = unsafe {
+            core::slice::from_raw_parts_mut(
+                interpreter_file_header_pages.as_mut_ptr(),
+                interpreter_file_header_len,
+            )
+        };
+
+        interpreter.read(0, interpreter_buf.into(), &OpenOptions::readwrite())?;
+        let interpreter_elf = Elf::parse(interpreter_buf)?;
+
+        // XXX: Freeing of the PAddr?
+
+        (Some(interpreter_path), Some(interpreter_elf))
+    } else {
+        (None, None)
+    };
+
+    // Decide the offset to apply to all vaddrs of the executable (and the
+    // interpreter) if it's a dynamic executable. TODO: Add ASLR support for
+    // security.
+    let (dyn_offset, interpreter_offset) = if elf.header().e_type == ET_DYN {
+        let align = elf.max_align();
+
+        if let Some(interpreter_elf) = &interpreter_elf {
+            // If there's an interpreter, we load the program at an offset so
+            // that it doesn't overlap with where the interpreter gets loaded.
+            // Linux calculates this value scaling with the maximum task size,
+            // but here we're using a BSD style behavior.  The interpreter gets
+            // loaded at the bottom of the address space, above NULL but
+            // respecting its alignment requirements.
+            const ET_DYN_BASE: u64 = 0x10001000;
+            (
+                align_down_u64(ET_DYN_BASE, align),
+                interpreter_elf.max_align(),
+            )
+        } else {
+            // Load non-interpreted dynamic programs at the bottom of address
+            // space.
+            (align, 0)
+        }
+    } else {
+        (0, 0)
+    };
+
+    end_of_image += dyn_offset as usize;
+    let at_entry = elf.header().e_entry + dyn_offset;
+
+    let mut random_bytes = [0u8; 16];
+    read_secure_random(((&mut random_bytes) as &mut [u8]).into())?;
+
+    // Set up the user stack.
+    let auxv = &[
+        Auxv::Phdr(
+            file_header_top
+                .sub(buf.len())
+                .add(elf.header().e_phoff as usize),
+        ),
+        Auxv::Phnum(elf.program_headers().len()),
+        Auxv::Phent(size_of::<ProgramHeader>()),
+        Auxv::Pagesz(PAGE_SIZE),
+        Auxv::Random(random_bytes),
+        Auxv::Entry(at_entry as usize),
+        Auxv::Base(interpreter_offset as usize),
+    ];
+    const USER_STACK_LEN: usize = 128 * 1024; // TODO: Implement rlimit
+    let init_stack_top = file_header_top.sub(buf.len());
+    let user_stack_bottom = init_stack_top.sub(USER_STACK_LEN).value();
+    let user_heap_bottom = align_up(end_of_image, PAGE_SIZE);
+    let init_stack_len = align_up(estimate_user_init_stack_size(argv, envp, auxv), PAGE_SIZE);
+    if user_heap_bottom >= user_stack_bottom || init_stack_len >= USER_STACK_LEN {
+        return Err(Errno::E2BIG.into());
+    }
+
+    let init_stack_pages = alloc_pages(init_stack_len / PAGE_SIZE, AllocPageFlags::KERNEL)?;
+    let user_sp = init_user_stack(
+        init_stack_top,
+        init_stack_pages.as_vaddr().add(init_stack_len),
+        init_stack_pages.as_vaddr(),
+        argv,
+        envp,
+        auxv,
+    )?;
+
+    let mut vm = Vm::new(
+        UserVAddr::new(user_stack_bottom).unwrap(),
+        UserVAddr::new(user_heap_bottom).unwrap(),
+    )?;
+
+    for i in 0..(buf.len() / PAGE_SIZE) {
+        println!(
+            "map buf at 0x{:x}",
+            file_header_top
+                .sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE)
+                .as_isize()
+        );
+        vm.page_table_mut().map_user_page(
+            file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE),
+            file_header_pages.add(i * PAGE_SIZE),
+        );
+    }
+
+    for i in 0..(init_stack_len / PAGE_SIZE) {
+        println!(
+            "map stack at 0x{:x}",
+            init_stack_top
+                .sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE)
+                .as_isize()
+        );
+        vm.page_table_mut().map_user_page(
+            init_stack_top.sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE),
+            init_stack_pages.add(i * PAGE_SIZE),
+        );
+    }
+
+    println!("Loading main program at {:x}", dyn_offset);
+
+    // Load our executable into memory at the offset we chose.
+    load_elf(&mut vm, executable, &elf, dyn_offset)?;
+
+    // Load the ELF interpreter (such as ld.so) if one is required,
+    // redirecting the entrypoint to it.
+    let entry = if let Some(interpreter_path) = interpreter_path {
+        let interpreter = interpreter_path.inode.as_file()?;
+        let interpreter_elf = interpreter_elf.unwrap();
+
+        println!("Loading interpreter at {:x}", interpreter_offset);
+
+        load_elf(&mut vm, interpreter, &interpreter_elf, interpreter_offset)?;
+
+        interpreter_elf.header().e_entry + interpreter_offset
+    } else {
+        elf.header().e_entry + dyn_offset
+    };
+
+    println!("done setting up process, entering at {:x}", entry);
+    Ok(UserspaceEntry {
+        vm,
+        ip: UserVAddr::new_nonnull(entry as usize)?,
+        user_sp,
+    })
 }
 
 /// Creates a new virtual memory space, parses and maps an executable file,
@@ -759,7 +832,7 @@ fn do_setup_userspace(
         return do_script_binfmt(&executable_path, argv, envp, root_fs, buf);
     }
 
-    do_elf_binfmt(executable, argv, envp, file_header_pages, buf)
+    do_elf_binfmt(root_fs, executable, argv, envp, file_header_pages, buf)
 }
 
 pub fn gc_exited_processes() {

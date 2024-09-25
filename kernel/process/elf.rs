@@ -1,7 +1,14 @@
 use crate::prelude::*;
 use core::{mem::size_of, slice::from_raw_parts};
-use goblin::{elf::header::ET_DYN, elf64::header::{Header, ELFMAG, EM_X86_64, ET_EXEC}};
 pub use goblin::elf64::program_header::ProgramHeader;
+use goblin::{
+    elf::{
+        header::ET_DYN,
+        program_header::{PT_INTERP, PT_LOAD},
+    },
+    elf64::header::{Header, ELFMAG, EM_X86_64, ET_EXEC},
+};
+use kerla_api::arch::PAGE_SIZE;
 
 /// A parsed ELF object.
 pub struct Elf<'a> {
@@ -54,5 +61,31 @@ impl<'a> Elf<'a> {
     /// Program headers.
     pub fn program_headers(&self) -> &[ProgramHeader] {
         self.program_headers
+    }
+
+    /// Returns the ELF interpreter defined in the program headers, or None.
+    pub fn interpreter(&self, buf: &'a [u8]) -> Option<&'a [u8]> {
+        for phdr in self.program_headers() {
+            if phdr.p_type == PT_INTERP {
+                let start = phdr.p_offset as usize;
+                let end = start.checked_add(phdr.p_filesz as usize)?;
+                return buf.get(start..end);
+            }
+        }
+        None
+    }
+
+    /// Returns the overall alignment of the program to be loaded based on the
+    /// alignment of the PT_LOAD segments.  The minimum alignment we can honor
+    /// is a page size.
+    pub fn max_align(&self) -> u64 {
+        let mut align = PAGE_SIZE as u64;
+        for phdr in self.program_headers() {
+            if phdr.p_type != PT_LOAD {
+                continue;
+            }
+            align = align.max(phdr.p_align);
+        }
+        align
     }
 }

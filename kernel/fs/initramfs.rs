@@ -105,10 +105,13 @@ impl Directory for InitramFsDir {
     }
 
     fn lookup(&self, name: &str) -> Result<INode> {
-        let initramfs_inode = self
-            .files
-            .get(name)
-            .ok_or_else(|| Error::new(Errno::ENOENT))?;
+        let initramfs_inode = self.files.get(name).ok_or_else(|| {
+            println!("looking up '{}'", name);
+            for entry in self.files.keys() {
+                println!("file '{}' {}", entry, name == *entry);
+            }
+            Error::new(Errno::ENOENT)
+        })?;
         Ok(match initramfs_inode {
             InitramFsINode::File(file) => INode::FileLike(file.clone() as Arc<dyn FileLike>),
             InitramFsINode::Directory(dir) => INode::Directory(dir.clone() as Arc<dyn Directory>),
