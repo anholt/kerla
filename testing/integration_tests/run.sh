@@ -19,7 +19,7 @@ for test in $TESTS_DIR/*.test; do
     echo "==> $test"
     
     set +e
-    sh $test
+    $test
     result=$?
     set -e
 
