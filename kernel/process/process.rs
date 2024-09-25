@@ -673,6 +673,10 @@ fn do_elf_binfmt(
         UserVAddr::new(user_heap_bottom).unwrap(),
     )?;
     for i in 0..(buf.len() / PAGE_SIZE) {
+        println!(
+            "map buf at 0x{:x}",
+            file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE).as_isize()
+        );
         vm.page_table_mut().map_user_page(
             file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE),
             file_header_pages.add(i * PAGE_SIZE),
@@ -680,11 +684,17 @@ fn do_elf_binfmt(
     }
 
     for i in 0..(init_stack_len / PAGE_SIZE) {
+        println!(
+            "map stack at 0x{:x}",
+            init_stack_top.sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE).as_isize()
+        );
         vm.page_table_mut().map_user_page(
             init_stack_top.sub(((init_stack_len / PAGE_SIZE) - i) * PAGE_SIZE),
             init_stack_pages.add(i * PAGE_SIZE),
         );
     }
+
+    println!("ALIGN 0x{:x}", dyn_offset);
 
     // Register program headers in the virtual memory space.
     for phdr in elf.program_headers() {
@@ -697,6 +707,13 @@ fn do_elf_binfmt(
         }
 
         let load_vaddr = phdr.p_vaddr + dyn_offset;
+        println!(
+            "LOAD 0x{:x} .. 0x{:x} (0x{:x} 0x{:x})",
+            load_vaddr,
+            load_vaddr + phdr.p_memsz,
+            phdr.p_filesz,
+            phdr.p_memsz,
+        );
 
         let area_type = if phdr.p_filesz > 0 {
             VmAreaType::File {
