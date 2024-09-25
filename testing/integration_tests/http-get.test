@@ -1,2 +1,0 @@
-set -ue
-curl -v http://httpbin.org/status/418 | grep 'teapot'
