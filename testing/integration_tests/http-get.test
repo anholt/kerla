@@ -1,2 +1,4 @@
+#!/bin/sh
+
 set -ue
 curl -v http://httpbingo.org/status/418 | grep 'teapot'

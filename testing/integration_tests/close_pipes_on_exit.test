@@ -1,3 +1,5 @@
+#!/bin/sh
+
 #
 # Checks if a pipe is closed on a process exit.
 #
