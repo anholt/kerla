@@ -39,6 +39,15 @@ RUN sh -c 'patch --ignore-whitespace -p1 < accept-empty-password-root-login.patc
 RUN ./configure CC=musl-gcc --enable-static --disable-largefile --disable-zlib --disable-syslog --disable-wtmp --disable-wtmpx --disable-utmp --disable-utmpx --disable-loginfunc
 RUN make -j$(nproc)
 
+FROM ubuntu-build AS c_tests
+WORKDIR /build
+COPY *.c ./
+RUN mkdir /integration_tests
+RUN musl-gcc -static -o /integration_tests/data_and_bss_static.test data_and_bss.c
+# Looks like mabe Ubuntu doesn't have Debian's static-pie build support patch.?  We get an interpreted file.
+# RUN musl-gcc -static-pie -o /integration_tests/data_and_bss_static_pie.test data_and_bss.c
+RUN musl-gcc -o /integration_tests/data_and_bss_dyn.test data_and_bss.c
+
 #
 #  Initramfs
 #
@@ -68,5 +77,7 @@ ADD etc/passwd /etc
 ADD etc/profile /etc
 ADD integration_tests /integration_tests
 ADD var/www/html/index.html /var/www/html/index.html
+
+COPY --from=c_tests /integration_tests/* /integration_tests/
 
 CMD ["/bin/sh"]
