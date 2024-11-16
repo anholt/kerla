@@ -61,4 +61,17 @@ impl<'a> Elf<'a> {
     pub fn program_headers(&self) -> &[ProgramHeader] {
         self.program_headers
     }
+
+    pub fn phdr_vaddr(&self) -> Result<UserVAddr> {
+        let phoff = self.header().e_phoff;
+
+        for hdr in self.program_headers() {
+            let p_offset = hdr.p_offset;
+            if phoff >= p_offset && phoff < p_offset.checked_add(hdr.p_filesz).unwrap_or(0) {
+                return UserVAddr::new_nonnull((phoff - p_offset + hdr.p_vaddr) as usize)
+                    .map_err(Into::into);
+            }
+        }
+        Err(Errno::ENOEXEC.into())
+    }
 }

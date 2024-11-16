@@ -600,10 +600,8 @@ fn do_elf_binfmt(
     executable: &Arc<dyn FileLike>,
     argv: &[&[u8]],
     envp: &[&[u8]],
-    file_header_pages: kerla_api::address::PAddr,
     buf: &[u8],
 ) -> Result<UserspaceEntry> {
-    let file_header_top = USER_STACK_TOP;
     let elf = Elf::parse(buf)?;
     let ip = elf.entry()?;
 
@@ -619,18 +617,14 @@ fn do_elf_binfmt(
 
     // Set up the user stack.
     let auxv = &[
-        Auxv::Phdr(
-            file_header_top
-                .sub(buf.len())
-                .add(elf.header().e_phoff as usize),
-        ),
+        Auxv::Phdr(elf.phdr_vaddr()?),
         Auxv::Phnum(elf.program_headers().len()),
         Auxv::Phent(size_of::<ProgramHeader>()),
         Auxv::Pagesz(PAGE_SIZE),
         Auxv::Random(random_bytes),
     ];
     const USER_STACK_LEN: usize = 128 * 1024; // TODO: Implement rlimit
-    let init_stack_top = file_header_top.sub(buf.len());
+    let init_stack_top = USER_STACK_TOP;
     let user_stack_bottom = init_stack_top.sub(USER_STACK_LEN).value();
     let user_heap_bottom = align_up(end_of_image, PAGE_SIZE);
     let init_stack_len = align_up(estimate_user_init_stack_size(argv, envp, auxv), PAGE_SIZE);
@@ -652,12 +646,6 @@ fn do_elf_binfmt(
         UserVAddr::new(user_stack_bottom).unwrap(),
         UserVAddr::new(user_heap_bottom).unwrap(),
     )?;
-    for i in 0..(buf.len() / PAGE_SIZE) {
-        vm.page_table_mut().map_user_page(
-            file_header_top.sub(((buf.len() / PAGE_SIZE) - i) * PAGE_SIZE),
-            file_header_pages.add(i * PAGE_SIZE),
-        );
-    }
 
     for i in 0..(init_stack_len / PAGE_SIZE) {
         vm.page_table_mut().map_user_page(
@@ -714,7 +702,7 @@ fn do_setup_userspace(
         return do_script_binfmt(&executable_path, argv, envp, root_fs, buf);
     }
 
-    do_elf_binfmt(executable, argv, envp, file_header_pages, buf)
+    do_elf_binfmt(executable, argv, envp, buf)
 }
 
 pub fn gc_exited_processes() {
