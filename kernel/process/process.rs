@@ -690,19 +690,15 @@ fn do_setup_userspace(
     handle_shebang: bool,
 ) -> Result<UserspaceEntry> {
     // Read the ELF header in the executable file.
-    let file_header_len = PAGE_SIZE;
-    let file_header_pages = alloc_pages(file_header_len / PAGE_SIZE, AllocPageFlags::KERNEL)?;
-    let buf =
-        unsafe { core::slice::from_raw_parts_mut(file_header_pages.as_mut_ptr(), file_header_len) };
-
+    let mut buf = [0u8; PAGE_SIZE];
     let executable = executable_path.inode.as_file()?;
-    executable.read(0, buf.into(), &OpenOptions::readwrite())?;
+    executable.read(0, (&mut buf[..]).into(), &OpenOptions::readwrite())?;
 
     if handle_shebang && buf.starts_with(b"#!") && buf.contains(&b'\n') {
-        return do_script_binfmt(&executable_path, argv, envp, root_fs, buf);
+        return do_script_binfmt(&executable_path, argv, envp, root_fs, &buf);
     }
 
-    do_elf_binfmt(executable, argv, envp, buf)
+    do_elf_binfmt(executable, argv, envp, &buf)
 }
 
 pub fn gc_exited_processes() {
