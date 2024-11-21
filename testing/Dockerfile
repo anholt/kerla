@@ -1,12 +1,12 @@
 # Set up the base build system we'll use in the other build stages, so you don't
 # apt update/install over and over.
-FROM ubuntu:20.04 as ubuntu-build
+FROM ubuntu:20.04 AS ubuntu-build
 RUN apt-get update && apt-get install -qy build-essential curl sed musl-tools
 
 #
 #  Busybox
 #
-FROM ubuntu-build as busybox
+FROM ubuntu-build AS busybox
 RUN curl -fsSL --output tarball.tar.bz2 "https://busybox.net/downloads/busybox-1.31.1.tar.bz2"
 RUN mkdir /build && tar xf tarball.tar.bz2 --strip-components=1 -C /build
 WORKDIR /build
@@ -19,7 +19,7 @@ RUN yes n | make oldconfig \
 #
 #  Curl
 #
-FROM ubuntu-build as curl
+FROM ubuntu-build AS curl
 RUN curl -fsSL --output tarball.tar.xz "https://curl.se/download/curl-7.76.1.tar.xz"
 RUN mkdir /build && tar xf tarball.tar.xz --strip-components=1 -C /build
 WORKDIR /build
@@ -29,7 +29,7 @@ RUN make -j$(nproc) curl_LDFLAGS=-all-static
 #
 #  Dropbear SSH server
 #
-FROM ubuntu-build as dropbear
+FROM ubuntu-build AS dropbear
 RUN curl -fsSL --output tarball.tar.bz2 "https://matt.ucc.asn.au/dropbear/releases/dropbear-2020.81.tar.bz2"
 RUN mkdir /build && tar xf tarball.tar.bz2 --strip-components=1 -C /build
 ADD dropbear/accept-empty-password-root-login.patch /build/accept-empty-password-root-login.patch
@@ -42,7 +42,7 @@ RUN make -j$(nproc)
 #
 #  Initramfs
 #
-FROM busybox as empty_dir
+FROM busybox AS empty_dir
 RUN mkdir /empty_dir
 
 FROM scratch
