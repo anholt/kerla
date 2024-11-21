@@ -12,11 +12,11 @@ jobs:
       matrix:
         include:
           # Release builds.
-          - os: ubuntu-20.04
+          - os: ubuntu-24.04
             build_options: RELEASE=1
 
           # Debug builds.
-          - os: ubuntu-20.04
+          - os: ubuntu-24.04
             build_options:
     steps:
       - uses: actions/checkout@v2
