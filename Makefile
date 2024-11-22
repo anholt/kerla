@@ -54,7 +54,7 @@ PYTHON3    ?= python3
 CARGO      ?= cargo
 BOCHS      ?= bochs
 NM         ?= rust-nm
-READELF    ?= readelf
+READELF    ?= $(shell if ! which llvm-readelf; then echo readelf; fi)
 STRIP      ?= rust-strip
 DRAWIO     ?= /Applications/draw.io.app/Contents/MacOS/draw.io
 
