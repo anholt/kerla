@@ -596,6 +596,33 @@ fn do_script_binfmt(
     do_setup_userspace(shebang_path, &argv, envp, root_fs, false)
 }
 
+/// Loads an ELF file's PT_LOAD sections into a process's memory, starting from 0.
+fn load_elf(vm: &mut Vm, executable: &Arc<dyn FileLike>, elf: &Elf) -> Result<()> {
+    for phdr in elf.program_headers() {
+        if phdr.p_type != PT_LOAD {
+            continue;
+        }
+
+        let area_type = if phdr.p_filesz > 0 {
+            VmAreaType::File {
+                file: executable.clone(),
+                offset: phdr.p_offset as usize,
+                file_size: phdr.p_filesz as usize,
+            }
+        } else {
+            VmAreaType::Anonymous
+        };
+
+        vm.add_vm_area(
+            UserVAddr::new_nonnull(phdr.p_vaddr as usize)?,
+            phdr.p_memsz as usize,
+            area_type,
+        )?;
+    }
+
+    Ok(())
+}
+
 fn do_elf_binfmt(
     executable: &Arc<dyn FileLike>,
     argv: &[&[u8]],
@@ -654,28 +681,7 @@ fn do_elf_binfmt(
         );
     }
 
-    // Register program headers in the virtual memory space.
-    for phdr in elf.program_headers() {
-        if phdr.p_type != PT_LOAD {
-            continue;
-        }
-
-        let area_type = if phdr.p_filesz > 0 {
-            VmAreaType::File {
-                file: executable.clone(),
-                offset: phdr.p_offset as usize,
-                file_size: phdr.p_filesz as usize,
-            }
-        } else {
-            VmAreaType::Anonymous
-        };
-
-        vm.add_vm_area(
-            UserVAddr::new_nonnull(phdr.p_vaddr as usize)?,
-            phdr.p_memsz as usize,
-            area_type,
-        )?;
-    }
+    load_elf(&mut vm, executable, &elf)?;
 
     Ok(UserspaceEntry { vm, ip, user_sp })
 }
