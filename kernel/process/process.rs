@@ -596,8 +596,10 @@ fn do_script_binfmt(
     do_setup_userspace(shebang_path, &argv, envp, root_fs, false)
 }
 
-/// Loads an ELF file's PT_LOAD sections into a process's memory, starting from 0.
-fn load_elf(vm: &mut Vm, executable: &Arc<dyn FileLike>, elf: &Elf) -> Result<()> {
+/// Loads an ELF file's PT_LOAD sections into a process's memory.  The offset
+/// must already be chosen so that there is an empty hole in the VM from the
+/// first p_vaddr+offset through the lastp_vaddr+offset+memsz.
+fn load_elf(vm: &mut Vm, executable: &Arc<dyn FileLike>, elf: &Elf, offset: u64) -> Result<()> {
     for phdr in elf.program_headers() {
         if phdr.p_type != PT_LOAD {
             continue;
@@ -614,7 +616,7 @@ fn load_elf(vm: &mut Vm, executable: &Arc<dyn FileLike>, elf: &Elf) -> Result<()
         };
 
         vm.add_vm_area(
-            UserVAddr::new_nonnull(phdr.p_vaddr as usize)?,
+            UserVAddr::new_nonnull((phdr.p_vaddr + offset) as usize)?,
             phdr.p_memsz as usize,
             area_type,
         )?;
@@ -681,7 +683,7 @@ fn do_elf_binfmt(
         );
     }
 
-    load_elf(&mut vm, executable, &elf)?;
+    load_elf(&mut vm, executable, &elf, 0)?;
 
     Ok(UserspaceEntry { vm, ip, user_sp })
 }
