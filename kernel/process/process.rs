@@ -37,7 +37,7 @@ use kerla_runtime::{
     page_allocator::{alloc_pages, AllocPageFlags},
     spinlock::{SpinLock, SpinLockGuard},
 };
-use kerla_utils::alignment::{align_down_u64, align_up};
+use kerla_utils::alignment::{align_down_u64, align_up, align_up_u64};
 
 type ProcessTable = BTreeMap<PId, Arc<Process>>;
 
@@ -610,7 +610,7 @@ fn load_elf(vm: &mut Vm, executable: &Arc<dyn FileLike>, elf: &Elf, offset: u64)
         let vaddr = align_down_u64(load_vaddr, PAGE_SIZE as u64);
         let align_offset = load_vaddr - vaddr;
         let file_size = phdr.p_filesz + align_offset;
-        let mem_size = phdr.p_memsz + align_offset;
+        let mem_size = align_up_u64(phdr.p_memsz + align_offset, PAGE_SIZE as u64) - 1;
         let offset = phdr.p_offset - align_offset;
 
         let area_type = if phdr.p_filesz > 0 {
